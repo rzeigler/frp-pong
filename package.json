@@ -1,0 +1,13 @@
+{
+  "name": "frp-pong",
+  "version": "1.0.0",
+  "description": "Experiments in using FRP for canvas drawing",
+  "main": "build/index.js",
+  "author": "Ryan Zeigler <zeiglerr@gmail.com>",
+  "license": "MIT",
+  "private": false,
+  "devDependencies": {
+    "parcel": "^1.12.4",
+    "typescript": "^3.7.5"
+  }
+}
