@@ -1,3 +1,5 @@
+import { fromEvents } from "kefir";
+
 function run(id: string, component: (el: HTMLCanvasElement) => void) {
     const el = window.document.getElementById(id);
     if (!el) {
@@ -11,5 +13,6 @@ function run(id: string, component: (el: HTMLCanvasElement) => void) {
 }
 
 run('main', (el) => {
-
+    const position = fromEvents(el, "mousemove")
+    position.onValue(console.log);
 })
