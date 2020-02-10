@@ -8,6 +8,11 @@
   "private": false,
   "devDependencies": {
     "parcel": "^1.12.4",
+    "parcel-bundler": "^1.12.4",
     "typescript": "^3.7.5"
+  },
+  "dependencies": {
+    "@types/kefir": "^3.8.2",
+    "kefir": "^3.8.6"
   }
 }
