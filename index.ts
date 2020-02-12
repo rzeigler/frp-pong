@@ -1,96 +1,170 @@
-import { fromEvents, Stream, Pool, pool, later, sequentially, interval, fromPromise, fromCallback, fromPoll, repeat, stream } from "kefir";
+import * as i from "./impl";
+import { Observable, interval, animationFrameScheduler, never, NEVER, Subject, combineLatest, of, merge } from "rxjs";
+import { map, share, withLatestFrom, filter, flatMap, scan, tap, sample } from "rxjs/operators";
+import * as A from "fp-ts/lib/Array";
+import { pipe } from "fp-ts/lib/pipeable";
+import { Lens } from "monocle-ts";
+import { identity } from "fp-ts/lib/function";
 
-function run(id: string, component: (el: HTMLCanvasElement) => void) {
-    const el = window.document.getElementById(id);
-    if (!el) {
-        throw new Error(`unable to locate element by id ${id}`);
-    }
-    if (el instanceof HTMLCanvasElement) {
-        component(el);
-    } else {
-        throw new Error(`element by id is not a canvas ${id}`);
-    }
+export interface PongSources {
+    dom: i.DOM;
+    state: Observable<PongState>;
 }
 
-type Draw = (canvas: HTMLCanvasElement) => void;
+export interface PongSinks {
+    draws: Observable<i.Draw>;
+    state: Observable<i.Reducer<PongState>>;
+}
 
-type Point = readonly [number, number];
+export interface Point2d {
+    readonly x: number;
+    readonly y: number;
+}
 
-run('main', (el) => {
-    const draws = component(el, follow);
-    const throttle = repeat(() => fromPromise(new Promise((resolve) => requestAnimationFrame(() => resolve()))));
-    
-    const animated = draws.flatMap(animate)
-        .debounce(15)
-        .observe(draw => {
-            console.log("drawing at " + Date.now());
-            draw(el);
-        });
-});
+const BALL_RADIUS = 10
+const PADDLE_WIDTH = 10
+const LEFT_PADDLE = 20
+const PADDLE_HEIGHT = 50
 
-function animate(draw: Draw): Stream<Draw, void> {
-    return stream(emitter => {
-        const req = requestAnimationFrame(() => {
-            emitter.emit(draw);
-            emitter.end();
-        })
-        return () => {
-            cancelAnimationFrame(req);
+export interface PongState {
+    ball: Point2d;
+    velocity: Point2d;
+    leftPaddle: number;
+    rightPaddle: number;
+}
+
+const lpLens = Lens.fromProp<PongState>()("leftPaddle");
+const rpLens = Lens.fromProp<PongState>()("rightPaddle");
+
+const add = (x: number) => (y: number) => x + y;
+
+function nextVelocity(size: i.Size2d, state: PongState): Point2d {
+    // If the ball is in contact with the top wall and moving up, invert
+    // This hit detection is... not good... it ignores things like the bottom of the paddle for instance
+    // It also will only do 1 hit per tick...
+    if (state.ball.y - BALL_RADIUS <= 0 && state.velocity.y < 0) {
+        return { ...state.velocity, y: state.velocity.y * -1 };
+    }
+    if (state.ball.y + BALL_RADIUS >= size.height && state.velocity.y > 0) {
+        return { ...state.velocity, y: state.velocity.y * -1 };
+    }
+    if (state.ball.x - BALL_RADIUS <= 0 && state.velocity.x < 0) {
+        return { ...state.velocity, x: state.velocity.x * -1 };
+    }
+    if (state.ball.x + BALL_RADIUS >= size.width && state.velocity.x > 0) {
+        return { ...state.velocity, x: state.velocity.x * -1 };
+    }
+    if (state.ball.x - BALL_RADIUS <= LEFT_PADDLE &&
+        state.ball.y <= state.leftPaddle + PADDLE_HEIGHT &&
+        state.ball.y >= state.leftPaddle) {
+        return { ...state.velocity, y: state.velocity.y * -1 };
+    }
+    if (state.ball.x + BALL_RADIUS >= size.width - LEFT_PADDLE &&
+        state.ball.y <= state.rightPaddle + PADDLE_HEIGHT &&
+        state.ball.y >= state.rightPaddle) {
+        return { ...state.velocity, y: state.velocity.y * -1 };
+    }
+    return state.velocity;
+}
+
+const tickBall = (size: i.Size2d) => (state: PongState): PongState => {
+    const velocity = nextVelocity(size, state);
+    const ball = { x: state.ball.x + velocity.x, y: state.ball.y + velocity.y }
+    return { ...state, velocity, ball }
+}
+
+function drawState(size: i.Size2d, state: PongState): i.Draw {
+    return i.all([
+        i.clearRect(0, 0, size.width, size.height),
+        i.beginPath(),
+        i.strokeStyle('black'),
+        i.fillStyle('black'),
+        i.arc(state.ball.x, state.ball.y, BALL_RADIUS, 0, 360),
+        i.stroke,
+        i.fillRect(LEFT_PADDLE - PADDLE_WIDTH, state.leftPaddle, PADDLE_WIDTH, PADDLE_HEIGHT),
+        i.fillRect(size.width - LEFT_PADDLE, state.rightPaddle, PADDLE_WIDTH, PADDLE_HEIGHT)
+    ])
+}
+
+function computePaddleMotion(keys: string[]): i.Reducer<PongState> {
+    const reducers = keys.map((k) => {
+        switch (k) {
+            case "w":
+                return lpLens.modify(add(-10));
+            case "s":
+                return lpLens.modify(add(10));
+            case "ArrowUp":
+                return rpLens.modify(add(-10));
+            case "ArrowDown":
+                return rpLens.modify(add(10));
+            default:
+                return identity
         }
-      });
-    // return fromCallback((cb) => {
-    //     requestAnimationFrame(() => {
-    //         cb(draw)
-    //     })
-    // });
+    });
+    return reducers.length > 0 ? reducers.reduce((f, g) => (x) => f(g(x))) : identity;
 }
 
-function component<S, El>(el: El, comp: (el: El, s: Stream<S, void>) => { out: Stream<S, void>, render: Stream<Draw, void> }): Stream<Draw, void> {
-    const connect: Pool<S, void> = pool();
-    const run = comp(el, connect);
-    connect.plug(run.out);
-    return run.render;
+const keyUp = (e: KeyboardEvent) => (as: string[]) =>
+    pipe(as, A.filter((k) => k !== e.key))
+
+const keyDown = (e: KeyboardEvent) => (as: string[]) =>
+    A.snoc(keyUp(e)(as), e.key)
+
+function Test(sources: PongSources): PongSinks {
+    const tickRate = interval(17).pipe(share());
+    // We want the current canvas size
+    // We cannot just sample here because distincts are eliminated
+    const canvasSize = sources.dom
+        .dimensions("#main", tickRate)
+        .pipe(share())
+
+    const ballMotion =
+        tickRate
+            // sample doesn't do what we want as it surpresses duplicates
+            .pipe(withLatestFrom(canvasSize))
+            .pipe(map(([_, size]) => tickBall(size)))
+
+    const draws =
+        combineLatest([canvasSize, sources.state], drawState)
+
+    const keyDowns =
+        sources.dom
+            .keydown("#main")
+            .pipe(map(keyDown))
+
+    const keyUps =
+        sources.dom
+            .keyup("#main")
+            .pipe(map(keyUp))
+
+    const paddleMotion =
+        merge(keyDowns, keyUps)
+            .pipe(scan((as, f) => f(as), []))
+            .pipe(map(computePaddleMotion))
+            .pipe(sample(tickRate))
+
+    return { draws, state: merge(ballMotion, paddleMotion) };
 }
 
-function follow(el: HTMLCanvasElement, s: Stream<Point, void>): { out: Stream<Point, void>, render: Stream<Draw, void> } {
-    const state = later(0, [0, 0] as Point).concat(s);
 
-    const position = fromEvents(el, "mousemove")
-        .throttle(100)
-        .map((ev: MouseEvent) => [ev.offsetX, ev.offsetY] as Point)
 
-    // Everytime position fires, we want to grab the latest state and construct an animation
-    const at = state.sampledBy(position, (start, to) => {
-        const deltaX = to[0] - start[0];
-        const deltaY = to[1] - start[1]
-        return linearDuration(5, 500)
-            .map((rel) => [start[0] + deltaX * rel, start[1] + deltaY * rel] as Point);
-    })
-    .flatMapLatest(x => x)
-
-    const draw = at.map(
-        (point: Point) =>
-            (el: HTMLCanvasElement) => {
-                const ctx = el.getContext('2d');
-                ctx.fillStyle='white';
-                ctx.fillRect(0, 0, el.width, el.height);
-                // ctx.clearRect(0, 0, el.width, el.height);
-                ctx.beginPath();
-                ctx.strokeStyle = 'black';
-                ctx.arc(point[0], point[1], 20, 0, 355);
-                ctx.stroke();
-            }
-    );
-
-    return {
-        out: at,
-        render: draw
-    }
+const drivers = {
+    dom: i.makeDOMDriver(),
+    draws: i.makeCanvasDriver(document.querySelector("#main"))
 }
 
-function linearDuration(resolutionMS: number, durationMS: number): Stream<number, void> {
-    return interval(resolutionMS, resolutionMS)
-        .scan<number>((l, r) => l + r)
-        .take(durationMS / resolutionMS)
-        .map((current) => current / durationMS);
-}
+const initial: PongState = {
+    ball: {
+        x: 20,
+        y: 20
+    },
+    velocity: {
+        x: 3,
+        y: 3
+    },
+    leftPaddle: 10,
+    rightPaddle: 400
+};
+
+const sub = i.run(drivers)(i.stateful(initial, Test));
+

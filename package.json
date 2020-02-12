@@ -7,12 +7,15 @@
   "license": "MIT",
   "private": false,
   "devDependencies": {
-    "parcel": "^1.12.4",
+    "html-webpack-plugin": "^3.2.0",
     "parcel-bundler": "^1.12.4",
-    "typescript": "^3.7.5"
+    "ts-loader": "^6.2.1",
+    "typescript": "^3.7.5",
+    "webpack": "^4.41.6"
   },
   "dependencies": {
-    "@types/kefir": "^3.8.2",
-    "kefir": "^3.8.6"
+    "fp-ts": "^2.4.4",
+    "monocle-ts": "^2.1.0",
+    "rxjs": "^6.5.4"
   }
 }
